@@ -1,0 +1,70 @@
+[Unit]
+Description=Linux hardening agent Prometheus exporter
+Documentation=https://github.com/example/linux-hardening-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Runs as root for the same reason as the audit unit: /etc/shadow and private
+# host keys are not readable otherwise, and a partial audit reporting SKIP for
+# every credential control is worse than no audit at all.
+User=root
+Group=root
+
+ExecStart=/opt/hardening-agent/venv/bin/hardening-agent serve
+ExecReload=/bin/kill -HUP $MAINPID
+
+# The agent installs SIGTERM/SIGINT handlers that stop accepting connections,
+# drain the audit thread, then close the socket. 30s is generous for that;
+# without the handler systemd would wait the full timeout on every stop.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=10s
+# Do not restart-loop forever on a genuine configuration error; give up after
+# 5 attempts in 5 minutes so the failure becomes visible instead of hidden.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# --- resource limits --------------------------------------------------------
+# The agent is a small Python process; these bounds turn a runaway leak into a
+# restart instead of an OOM event that takes down the whole host.
+MemoryMax=256M
+MemoryHigh=192M
+CPUQuota=50%
+TasksMax=32
+
+# --- sandboxing -------------------------------------------------------------
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hardening-agent /var/log/hardening-agent
+ProtectHome=read-only
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# The exporter binds a TCP socket on loopback by default, so it needs AF_INET.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+
+# --- logging ----------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hardening-agent-exporter
+
+[Install]
+WantedBy=multi-user.target

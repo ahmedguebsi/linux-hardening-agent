@@ -1,0 +1,86 @@
+# A tuned configuration for a real fleet.
+#
+# Differences from the shipped default (config/agent.toml), and why:
+#   * hourly audits instead of every 60s -- a full audit per minute is wasted
+#     work on a host whose configuration changes weekly at most
+#   * exclusions for controls that do not apply to this role
+#   * fail_on_severity raised to critical, so CI only breaks on real risk
+#   * remediation enabled but risky remediations still gated
+#
+# Install to /etc/hardening-agent/agent.toml.
+
+[audit]
+# Appears in hardening_agent_host_info, so you can compare like with like across
+# a fleet that runs more than one baseline.
+profile = "production-web"
+
+# Controls that do not apply to this host ROLE. Document every exclusion --
+# an undocumented exclusion is indistinguishable from an oversight.
+exclude = [
+  # This host runs Docker; bridge networking requires ip_forward.
+  # (The check auto-skips on container hosts, but being explicit documents intent.)
+  "kernel_ip_forwarding_disabled",
+
+  # /tmp is on the root volume by design on these instances; changing that
+  # requires reprovisioning, tracked in INFRA-4821.
+  "fs_tmp_separate_partition",
+]
+
+min_severity = "low"
+
+# Report everything, but only break the build on critical findings. Reporting
+# and gating are different thresholds and conflating them causes either alert
+# fatigue or missed findings.
+fail_on_severity = "critical"
+
+check_timeout = 30.0
+
+[logging]
+level = "INFO"
+format = "json"
+file = "/var/log/hardening-agent/agent.log"
+
+# Evidence includes configuration values and paths. Off in steady state; enable
+# per-run with --verbose when investigating.
+include_evidence = false
+
+[exporter]
+enabled = true
+
+# Loopback, scraped by a node-local Prometheus agent that forwards via
+# remote_write. If you must scrape across the network, set 0.0.0.0 here AND
+# restrict port 9101 in the security group to the Prometheus SG only.
+host = "127.0.0.1"
+port = 9101
+
+request_timeout = 10.0
+
+# Hourly. Host configuration changes on the order of days; auditing every
+# minute burns CPU for no additional signal. Prometheus still scrapes the
+# cached result every 15s, so dashboards stay responsive.
+refresh_interval = 3600.0
+
+[metrics]
+enabled = true
+textfile_dir = "/var/lib/hardening-agent/textfile"
+textfile_name = "hardening_agent.prom"
+
+# node_exporter already covers host telemetry on these instances, so skip the
+# agent's own collectors and avoid duplicate series.
+host_metrics = false
+
+monitored_mounts = ["/", "/var", "/var/lib/docker"]
+
+[remediation]
+# Enabled, but `remediate` still requires --yes on the command line and root.
+enabled = true
+
+# Left OFF. Firewall enablement and SSH password-auth changes can sever access;
+# those are done deliberately, one at a time, with console access available.
+allow_risky = false
+
+backup_dir = "/var/backups/hardening-agent"
+
+# ~3 weeks of hourly remediation runs, though in practice remediation is
+# manual and infrequent, so this is generous.
+keep_backups = 50

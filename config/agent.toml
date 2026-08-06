@@ -1,0 +1,90 @@
+# hardening-agent configuration
+#
+# Installed to /etc/hardening-agent/agent.toml.
+# Every key below is optional; the values shown are the built-in defaults.
+#
+# Precedence: defaults < this file < HARDENING_AGENT_* env vars < CLI flags.
+# Unknown keys are a fatal error, not a warning -- a typo in a security control
+# must never be silently ignored.
+
+[audit]
+# Free-form label recorded in reports and metrics. Use it to distinguish
+# baselines across fleets, e.g. "baseline", "pci", "internal-dev".
+profile = "baseline"
+
+# Whitelist: when non-empty, only these check ids run.
+include = []
+
+# Blacklist: always wins over include and tags.
+# Example: a NAT instance legitimately forwards packets.
+exclude = []
+
+# Only run checks carrying at least one of these tags. Empty means all.
+# Available tags: ssh, kernel, network, filesystem, accounts, services, cis, ...
+# Run `hardening-agent list-checks` for the full list.
+tags = []
+
+# Skip checks below this severity entirely.
+min_severity = "low"
+
+# Exit code 1 when a finding at or above this severity exists. This is the knob
+# CI gates on: report everything, but only fail the pipeline on real risk.
+fail_on_severity = "high"
+
+# Per-check wall-clock budget in seconds.
+check_timeout = 20.0
+
+[logging]
+level = "INFO"
+# "json" for production (journald/Loki/CloudWatch), "text" for terminals.
+format = "json"
+# Logs go to stderr by default so stdout stays clean for `--format json | jq`.
+# Set a path to additionally write a rotating file (10 MB x 5).
+# file = "/var/log/hardening-agent/agent.log"
+
+# Evidence can include file paths and configuration values. Off by default so
+# routine logs stay free of host detail; --verbose enables it per-run.
+include_evidence = false
+
+[exporter]
+enabled = true
+
+# Loopback by default. The metrics expose the host's exact security weaknesses,
+# which is a reconnaissance gift to anyone who can reach the port. Bind to
+# 0.0.0.0 only behind a security group you trust, or scrape via a sidecar.
+host = "127.0.0.1"
+port = 9101
+
+request_timeout = 10.0
+max_request_bytes = 8192
+
+# How often the background thread re-audits. The exporter serves the cached
+# result, so this is decoupled from Prometheus' scrape interval. An hour is
+# usually right for a full audit; this default suits demos and containers.
+refresh_interval = 60.0
+
+[metrics]
+enabled = true
+
+# node_exporter reads *.prom from this directory when started with
+#   --collector.textfile.directory=/var/lib/hardening-agent/textfile
+textfile_dir = "/var/lib/hardening-agent/textfile"
+textfile_name = "hardening_agent.prom"
+
+# Host telemetry (load, memory, disk, uptime) alongside the compliance metrics.
+# Disable if node_exporter already covers this host.
+host_metrics = true
+
+monitored_mounts = ["/", "/var", "/tmp", "/home"]
+
+[remediation]
+# Master switch. Even when true, `remediate` still requires --yes on the CLI.
+enabled = false
+
+# Permits remediations that can sever access to the host: enabling a
+# default-deny firewall, disabling SSH password authentication, locking
+# accounts. Never enable this on a host you cannot reach out-of-band.
+allow_risky = false
+
+backup_dir = "/var/backups/hardening-agent"
+keep_backups = 20

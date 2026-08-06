@@ -1,0 +1,195 @@
+# Alerting rules for hardening-agent.
+#
+# Design principles behind these:
+#
+#   * Alert on SEVERITY, not on count. "3 checks failing" is not actionable;
+#     "a critical control is failing on web-01" is.
+#   * Separate AGENT problems from HOST problems. A stale metric and a failing
+#     metric need different responses and often different on-call rotations.
+#   * Use `for:` generously. A check failing for 15 minutes during a maintenance
+#     window is noise; a critical control failing for an hour is real.
+#   * Every alert links to a runbook. An alert nobody knows how to action is
+#     worse than no alert.
+
+groups:
+  # -------------------------------------------------------------------------
+  - name: hardening-agent-compliance
+    interval: 30s
+    rules:
+      - alert: CriticalSecurityControlFailing
+        expr: hardening_agent_check_status{severity="critical"} == 0
+        for: 15m
+        labels:
+          severity: critical
+          team: security
+        annotations:
+          summary: "Critical control {{ $labels.check_id }} failing on {{ $labels.instance }}"
+          description: >-
+            {{ $labels.title }}
+            This is a direct path to unauthorised access or root privilege
+            escalation. Investigate immediately.
+          runbook: "https://github.com/example/linux-hardening-agent/blob/main/docs/checks.md#{{ $labels.check_id }}"
+
+      - alert: HighSecurityControlFailing
+        expr: hardening_agent_check_status{severity="high"} == 0
+        for: 1h
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "High-severity control {{ $labels.check_id }} failing on {{ $labels.instance }}"
+          description: "{{ $labels.title }}"
+          runbook: "https://github.com/example/linux-hardening-agent/blob/main/docs/checks.md#{{ $labels.check_id }}"
+
+      - alert: HostComplianceScoreLow
+        expr: hardening_agent_compliance_score < 80
+        for: 2h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} is at {{ $value | printf \"%.0f\" }}% compliance"
+          description: >-
+            Fewer than 80% of applicable controls are passing. Run
+            `hardening-agent audit --verbose` on the host for detail.
+
+      - alert: ComplianceRegression
+        # A control that was passing an hour ago and is failing now. The
+        # TRANSITION is far more actionable than the steady state: something
+        # changed on this host recently.
+        expr: |
+          hardening_agent_check_status == 0
+            and (hardening_agent_check_status offset 1h) == 1
+        for: 10m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "{{ $labels.check_id }} regressed on {{ $labels.instance }}"
+          description: >-
+            This control was passing an hour ago. Something changed on this
+            host -- check recent deployments, config management runs, and
+            manual sessions.
+
+      - alert: SecurityUpdatesPending
+        expr: hardening_agent_check_status{check_id="services_no_pending_security_updates"} == 0
+        for: 24h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} has pending security updates"
+          description: >-
+            Known, published vulnerabilities with available patches are
+            unapplied on this host. This is the most directly actionable
+            finding the agent produces.
+
+  # -------------------------------------------------------------------------
+  - name: hardening-agent-health
+    interval: 30s
+    rules:
+      - alert: HardeningAgentCheckErrored
+        # An erroring check is a BUG IN THE AGENT, not a problem with the host.
+        # It should page whoever owns this repository.
+        expr: hardening_agent_check_status == 3
+        for: 30m
+        labels:
+          severity: warning
+          team: security-engineering
+        annotations:
+          summary: "Check {{ $labels.check_id }} is erroring on {{ $labels.instance }}"
+          description: >-
+            The check could not complete, so this host's posture for that
+            control is UNKNOWN -- not compliant, not non-compliant. This is an
+            agent defect. Reproduce with:
+            hardening-agent audit --check {{ $labels.check_id }} --log-level DEBUG
+
+      - alert: HardeningAgentStale
+        expr: time() - hardening_agent_last_run_timestamp_seconds > 7200
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "hardening-agent has not run on {{ $labels.instance }} for 2 hours"
+          description: >-
+            Every compliance metric from this host is stale. The timer or the
+            exporter's audit thread has stopped.
+            Check: systemctl status hardening-agent.timer hardening-agent-exporter
+
+      - alert: HardeningAgentExporterWedged
+        # Distinct from staleness: this fires when the exporter is UP and
+        # serving, but its background audit thread has stopped making progress.
+        # Without this the exporter looks perfectly healthy while lying.
+        expr: hardening_agent_exporter_metrics_age_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "hardening-agent exporter is serving stale data on {{ $labels.instance }}"
+          description: >-
+            The exporter is responding but its audit thread has not published
+            for {{ $value | printf "%.0f" }}s. Restart the service.
+
+      - alert: HardeningAgentDown
+        expr: up{job="hardening-agent"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "hardening-agent exporter unreachable on {{ $labels.instance }}"
+
+      - alert: HardeningAgentAuditFailing
+        expr: increase(hardening_agent_exporter_errors_total[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: security-engineering
+        annotations:
+          summary: "hardening-agent audits are raising on {{ $labels.instance }}"
+          description: "{{ $value | printf \"%.0f\" }} audit runs raised in the last hour."
+
+      - alert: HardeningAgentCollectorFailing
+        # Textfile path only. This series is written even when the audit fails,
+        # which is the whole point -- otherwise a broken collector is
+        # indistinguishable from a healthy, silent one.
+        expr: hardening_agent_collector_success == 0
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "hardening-agent textfile collection failing on {{ $labels.instance }}"
+
+  # -------------------------------------------------------------------------
+  - name: hardening-agent-host
+    interval: 30s
+    rules:
+      - alert: HostDiskFillingUp
+        expr: hardening_agent_host_filesystem_used_percent > 85
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+
+      - alert: HostDiskCritical
+        expr: hardening_agent_host_filesystem_used_percent > 95
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+
+      - alert: HostMemoryPressure
+        expr: hardening_agent_host_memory_used_percent > 90
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} memory at {{ $value | printf \"%.0f\" }}%"

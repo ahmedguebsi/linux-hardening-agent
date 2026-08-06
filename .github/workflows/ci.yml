@@ -1,0 +1,419 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Weekly run catches dependency and base-image CVEs that appear after merge.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+# Default to no permissions and grant per job. A compromised action in any job
+# then cannot push code or publish packages.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+  FORCE_COLOR: "1"
+
+jobs:
+  # -------------------------------------------------------------------------
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev || uv pip install --system -e ".[dev]"
+
+      - name: Check formatting
+        run: ruff format --check --diff src tests scripts
+
+      - name: Lint
+        run: ruff check --output-format=github src tests scripts
+
+      # docs/checks.md is generated from the live registry. This fails if
+      # someone added a control without regenerating it, so the catalogue
+      # documentation cannot drift from the code.
+      - name: Check generated documentation is current
+        run: python scripts/generate_check_docs.py --check
+
+  # -------------------------------------------------------------------------
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv pip install --system -e ".[dev]"
+      - name: mypy --strict
+        run: mypy src
+
+  # -------------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04 is the deployment target. macOS proves the fake-system
+        # seam really does isolate the checks from the host: the same suite
+        # passes on a platform where none of these controls exist.
+        os: [ubuntu-24.04, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv pip install --system -e ".[dev]"
+
+      - name: Run tests
+        run: pytest --cov --cov-report=xml --cov-report=term-missing -v
+
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-24.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  self-audit:
+    name: Agent audits the runner
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv pip install --system -e "."
+
+      # Dogfooding: run the agent against the CI runner itself. This is the
+      # single best smoke test we have -- it exercises every check against a
+      # real Ubuntu host, not a fake. Findings are expected (a GitHub runner is
+      # not hardened), so the exit code is captured rather than failing the job.
+      - name: Audit the runner
+        id: audit
+        run: |
+          set +e
+          hardening-agent audit --verbose --log-level INFO
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Fail only if a check errored
+        run: |
+          # Exit 2 means a check itself broke, which is a real defect in this
+          # repository. Exit 1 just means the runner is not hardened.
+          if [ "${{ steps.audit.outputs.exit_code }}" -ge 2 ]; then
+            echo "::error::a check errored; the agent has a bug"
+            exit 1
+          fi
+          echo "audit completed (exit ${{ steps.audit.outputs.exit_code }})"
+
+      - name: Generate SARIF
+        run: hardening-agent audit --format sarif -o hardening.sarif --log-level ERROR || true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: hardening.sarif
+          category: hardening-agent
+
+      - name: Verify metrics are valid exposition format
+        run: |
+          hardening-agent export --stdout --log-level ERROR > metrics.prom
+          test -s metrics.prom || { echo "::error::no metrics produced"; exit 1; }
+          # Every non-comment line must parse as `name{labels} value`.
+          python - <<'PY'
+          import sys
+          bad = []
+          for number, line in enumerate(open("metrics.prom"), 1):
+              line = line.rstrip("\n")
+              if not line or line.startswith("#"):
+                  continue
+              name, _, value = line.rpartition(" ")
+              try:
+                  float(value)
+              except ValueError:
+                  bad.append((number, line))
+          if bad:
+              for number, line in bad:
+                  print(f"::error::line {number} is not valid exposition: {line}")
+              sys.exit(1)
+          print("metrics validated")
+          PY
+
+  # -------------------------------------------------------------------------
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        env:
+          SHELLCHECK_OPTS: --severity=style --external-sources
+        with:
+          scandir: ./scripts
+
+      - name: Verify scripts are executable and syntactically valid
+        run: |
+          status=0
+          for script in scripts/*.sh scripts/lib/*.sh; do
+            bash -n "$script" || { echo "::error::syntax error in $script"; status=1; }
+          done
+          exit $status
+
+      - name: Validate systemd units
+        run: |
+          # systemd-analyze verify resolves ExecStart paths, which do not exist
+          # on the runner, so we filter those specific errors out and fail on
+          # anything else (typos in directive names, bad syntax).
+          status=0
+          for unit in packaging/systemd/*; do
+            output=$(systemd-analyze verify "$unit" 2>&1 || true)
+            filtered=$(echo "$output" | grep -v "Command .* is not executable" \
+                                      | grep -v "Failed to prepare filename" || true)
+            if [ -n "$filtered" ]; then
+              echo "::error file=$unit::$filtered"
+              status=1
+            fi
+          done
+          exit $status
+
+  # -------------------------------------------------------------------------
+  security:
+    name: Security scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # -------------------------------------------------------------------------
+  docker:
+    name: Container build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: hardening-agent:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Enforce the 200MB image budget
+        run: |
+          size=$(docker image inspect hardening-agent:ci --format '{{.Size}}')
+          human=$(awk -v s="$size" 'BEGIN {printf "%.1f MB", s/1000/1000}')
+          echo "Image size: $human"
+          if [ "$size" -gt $((200 * 1000 * 1000)) ]; then
+            echo "::error::image is $human, over the 200 MB budget"
+            exit 1
+          fi
+
+      - name: Verify the container does not run as root
+        run: |
+          uid=$(docker run --rm --entrypoint python hardening-agent:ci -c 'import os; print(os.getuid())')
+          echo "container uid: $uid"
+          if [ "$uid" = "0" ]; then
+            echo "::error::container runs as root"
+            exit 1
+          fi
+
+      - name: Smoke test the CLI
+        run: |
+          docker run --rm hardening-agent:ci --version
+          docker run --rm hardening-agent:ci list-checks
+
+      - name: Smoke test the exporter and graceful shutdown
+        run: |
+          docker run -d --name smoke -p 9101:9101 hardening-agent:ci serve
+          # Poll readiness rather than sleeping a fixed interval.
+          for attempt in $(seq 1 30); do
+            if curl -sf http://localhost:9101/readyz >/dev/null 2>&1; then
+              echo "ready after ${attempt}s"; break
+            fi
+            if [ "$attempt" = "30" ]; then
+              echo "::error::exporter never became ready"
+              docker logs smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl -sf http://localhost:9101/healthz | tee /dev/stderr | grep -q '"ok"'
+          curl -sf http://localhost:9101/metrics | grep -q hardening_agent_check_status
+          # 404 on an unknown path, 405 on a write attempt.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9101/nope)" = "404" ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -XPOST http://localhost:9101/metrics)" = "405" ]
+
+          # Graceful shutdown: the SIGTERM handler must stop the container well
+          # inside Docker's 10s grace period, not get SIGKILLed at the end.
+          start=$(date +%s)
+          docker stop smoke >/dev/null
+          elapsed=$(( $(date +%s) - start ))
+          echo "container stopped in ${elapsed}s"
+          if [ "$elapsed" -ge 10 ]; then
+            echo "::error::container did not honour SIGTERM (took ${elapsed}s)"
+            exit 1
+          fi
+          docker rm -f smoke >/dev/null 2>&1 || true
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: hardening-agent:ci
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+
+      - name: Upload Trivy image results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+  # -------------------------------------------------------------------------
+  install:
+    name: End-to-end install
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Preflight
+        run: ./scripts/preflight.sh || true
+
+      - name: Install
+        run: sudo -E ./scripts/install.sh --yes
+
+      - name: Verify the installation
+        run: |
+          hardening-agent --version
+          systemctl is-enabled hardening-agent.timer
+          systemctl is-active hardening-agent-exporter.service
+          # The exporter needs a moment for its first audit.
+          for attempt in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9101/readyz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:9101/metrics | grep -q hardening_agent_compliance_score
+
+      - name: Verify the timer publishes the textfile
+        run: |
+          sudo systemctl start hardening-agent.service
+          sudo test -s /var/lib/hardening-agent/textfile/hardening_agent.prom
+          echo "textfile published"
+
+      - name: Verify remediation refuses without --yes
+        run: |
+          if sudo hardening-agent remediate --log-level ERROR; then
+            echo "::error::remediate ran without --yes"
+            exit 1
+          fi
+          echo "guard rail holds"
+
+      - name: Verify dry-run changes nothing
+        run: |
+          before=$(sudo sha256sum /etc/ssh/sshd_config | cut -d' ' -f1)
+          sudo hardening-agent remediate --dry-run --log-level ERROR || true
+          after=$(sudo sha256sum /etc/ssh/sshd_config | cut -d' ' -f1)
+          [ "$before" = "$after" ] || { echo "::error::dry run modified sshd_config"; exit 1; }
+          echo "dry run is inert"
+
+      - name: Uninstall
+        run: |
+          sudo ./scripts/uninstall.sh --purge --yes
+          ! command -v hardening-agent
+          ! systemctl is-enabled hardening-agent.timer 2>/dev/null
+          test ! -d /opt/hardening-agent
+          echo "uninstall is clean"
+
+  # -------------------------------------------------------------------------
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-24.04
+    needs: [lint, typecheck, test, self-audit, shell, security, docker, install]
+    if: always()
+    steps:
+      # A single required status check for branch protection. Without this,
+      # adding a job to the matrix silently makes it non-blocking.
+      - name: Verify every job succeeded
+        run: |
+          if echo '${{ toJSON(needs) }}' | grep -q '"result": *"failure"'; then
+            echo "::error::one or more CI jobs failed"
+            exit 1
+          fi
+          if echo '${{ toJSON(needs) }}' | grep -q '"result": *"cancelled"'; then
+            echo "::error::one or more CI jobs were cancelled"
+            exit 1
+          fi
+          echo "All CI jobs passed."

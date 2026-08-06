@@ -1,0 +1,42 @@
+version: 2
+
+updates:
+  # The agent has no runtime dependencies, so this only tracks the dev toolchain
+  # (ruff, mypy, pytest). Still worth automating: a stale linter stops catching
+  # new classes of bug.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: [dependencies, python]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      dev-tools:
+        patterns: ["ruff", "mypy", "pytest*"]
+
+  # Pinned action SHAs are the supply-chain control that matters most here: a
+  # compromised third-party action runs with this repo's token.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: "chore(ci)"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "chore(docker)"

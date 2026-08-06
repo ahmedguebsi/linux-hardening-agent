@@ -1,0 +1,225 @@
+{
+  "_comment": "Illustrative output of `hardening-agent audit --format json` on an Ubuntu 24.04 EC2 instance, trimmed to a representative subset of checks. Generate a real one with: hardening-agent audit --format json -o report.json",
+  "schema_version": "1.0",
+  "agent_version": "1.0.0",
+  "profile": "baseline",
+  "dry_run": false,
+  "host": {
+    "hostname": "web-01",
+    "os_name": "Ubuntu",
+    "os_version": "24.04",
+    "kernel": "6.8.0-41-generic",
+    "architecture": "x86_64",
+    "virtualization": "ec2"
+  },
+  "started_at": "2026-08-06T09:15:02Z",
+  "finished_at": "2026-08-06T09:15:03Z",
+  "duration_ms": 412.75,
+  "score": 88.89,
+  "counts": {
+    "pass": 8,
+    "fail": 1,
+    "skip": 1,
+    "error": 0
+  },
+  "results": [
+    {
+      "check_id": "ssh_root_login_disabled",
+      "title": "SSH direct root login is disabled",
+      "description": "PermitRootLogin must be 'no' or 'prohibit-password'.",
+      "severity": "critical",
+      "rationale": "Direct root login removes per-user accountability and gives brute-force attackers a known-valid username. Administrators should log in as themselves and escalate with sudo, which leaves an audit trail.",
+      "tags": ["access-control", "cis", "network", "remote-access", "ssh"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 5.1.7", "NIST 800-53 AC-6"],
+      "status": "fail",
+      "detail": "PermitRootLogin = yes, expected no",
+      "evidence": {
+        "option": "PermitRootLogin",
+        "configured": "yes",
+        "effective": "yes",
+        "accepted": ["no", "prohibit-password"]
+      },
+      "duration_ms": 1.842,
+      "remediation": null
+    },
+    {
+      "check_id": "accounts_single_uid_zero",
+      "title": "root is the only account with UID 0",
+      "description": "No account other than root may have UID 0.",
+      "severity": "critical",
+      "rationale": "A second UID 0 account is full root access under a name that does not look like root, which is a classic persistence mechanism that survives password rotation and is easy to overlook in an audit.",
+      "tags": ["accounts", "authentication", "cis", "persistence", "privilege-escalation"],
+      "remediable": false,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 6.2.9"],
+      "status": "pass",
+      "detail": "root is the only UID 0 account",
+      "evidence": {
+        "accounts": ["root"]
+      },
+      "duration_ms": 0.617,
+      "remediation": null
+    },
+    {
+      "check_id": "fs_shadow_permissions",
+      "title": "/etc/shadow is not readable by non-root users",
+      "description": "/etc/shadow must be mode 0640 or stricter, owned by root.",
+      "severity": "critical",
+      "rationale": "/etc/shadow holds password hashes. Any local read gives an attacker an offline cracking target with no rate limit and no logging.",
+      "tags": ["accounts", "cis", "credentials", "filesystem", "permissions"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 6.1.2"],
+      "status": "pass",
+      "detail": "/etc/shadow mode 0640 uid 0",
+      "evidence": {
+        "path": "/etc/shadow",
+        "mode": "0640",
+        "max_mode": "0640",
+        "uid": 0,
+        "gid": 42
+      },
+      "duration_ms": 0.204,
+      "remediation": null
+    },
+    {
+      "check_id": "ssh_host_key_permissions",
+      "title": "SSH private host keys are protected",
+      "description": "Private host keys must be mode 0640 or stricter and owned by root.",
+      "severity": "critical",
+      "rationale": "A leaked private host key allows an attacker to impersonate this server and transparently machine-in-the-middle every SSH session, including the credentials and commands within it.",
+      "tags": ["cis", "cryptography", "network", "permissions", "remote-access", "ssh"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 5.1.2"],
+      "status": "pass",
+      "detail": "2 private host key(s) correctly protected",
+      "evidence": {
+        "inspected": [
+          "/etc/ssh/ssh_host_ecdsa_key",
+          "/etc/ssh/ssh_host_ed25519_key"
+        ]
+      },
+      "duration_ms": 0.388,
+      "remediation": null
+    },
+    {
+      "check_id": "kernel_aslr_enabled",
+      "title": "Full address space layout randomisation is enabled",
+      "description": "kernel.randomize_va_space must be 2.",
+      "severity": "high",
+      "rationale": "ASLR randomises the memory layout of every process, which is the baseline mitigation that makes memory-corruption exploits probabilistic rather than reliable. Value 2 randomises the heap too.",
+      "tags": ["cis", "exploit-mitigation", "kernel", "memory", "sysctl"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 1.5.3"],
+      "status": "pass",
+      "detail": "kernel.randomize_va_space = 2",
+      "evidence": {
+        "sysctl": "kernel.randomize_va_space",
+        "actual": "2",
+        "expected": "2"
+      },
+      "duration_ms": 0.151,
+      "remediation": null
+    },
+    {
+      "check_id": "services_firewall_enabled",
+      "title": "A host firewall is active with a default-deny inbound policy",
+      "description": "ufw or nftables must be active and default-deny for incoming traffic.",
+      "severity": "high",
+      "rationale": "Security groups protect the north-south edge, but a host firewall is what limits east-west movement once an attacker is already inside the VPC. Default-deny means a service accidentally bound to 0.0.0.0 is not automatically reachable.",
+      "tags": ["cis", "firewall", "network", "services", "systemd"],
+      "remediable": true,
+      "risky_remediation": true,
+      "references": ["CIS Ubuntu 24.04 4.1.1"],
+      "status": "pass",
+      "detail": "ufw is active with default-deny incoming",
+      "evidence": {
+        "backend": "ufw",
+        "active": true,
+        "default_deny_incoming": true
+      },
+      "duration_ms": 38.921,
+      "remediation": null
+    },
+    {
+      "check_id": "services_unattended_upgrades_enabled",
+      "title": "Automatic security updates are enabled",
+      "description": "unattended-upgrades must be installed and active.",
+      "severity": "high",
+      "rationale": "The overwhelming majority of real-world compromises exploit a vulnerability with an available patch. Automated security patching closes the window between disclosure and remediation without depending on a human being on call.",
+      "tags": ["cis", "patching", "services", "systemd"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 1.9"],
+      "status": "pass",
+      "detail": "unattended security upgrades are enabled",
+      "evidence": {
+        "config_present": true,
+        "config_enabled": true,
+        "unit_active": true
+      },
+      "duration_ms": 12.408,
+      "remediation": null
+    },
+    {
+      "check_id": "kernel_ip_forwarding_disabled",
+      "title": "IPv4 forwarding is disabled",
+      "description": "net.ipv4.ip_forward must be 0 on hosts that are not routers.",
+      "severity": "medium",
+      "rationale": "A host that forwards packets can be used to pivot between network segments, bypassing firewall rules that assume traffic terminates at this machine. Only routers, NAT gateways and container hosts need this enabled.",
+      "tags": ["cis", "kernel", "network", "sysctl"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 3.2.1"],
+      "status": "skip",
+      "detail": "container runtime detected; IPv4 forwarding is required for bridge networking",
+      "evidence": {
+        "reason": "docker_detected"
+      },
+      "duration_ms": 0.279,
+      "remediation": null
+    },
+    {
+      "check_id": "services_time_sync_enabled",
+      "title": "Time synchronisation is active",
+      "description": "systemd-timesyncd, chrony or ntpd must be running.",
+      "severity": "medium",
+      "rationale": "Correlating logs across hosts during an incident requires accurate clocks. Clock drift also breaks TLS certificate validation and time-based authentication such as TOTP and AWS SigV4.",
+      "tags": ["cis", "logging", "services", "systemd", "time"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 2.3.1"],
+      "status": "pass",
+      "detail": "time synchronisation active via systemd-timesyncd",
+      "evidence": {
+        "candidates": ["systemd-timesyncd", "chrony", "chronyd", "ntp", "ntpsec"],
+        "running": ["systemd-timesyncd"]
+      },
+      "duration_ms": 9.663,
+      "remediation": null
+    },
+    {
+      "check_id": "accounts_password_max_days",
+      "title": "Password expiry policy is configured",
+      "description": "PASS_MAX_DAYS in /etc/login.defs must be 365 or fewer.",
+      "severity": "low",
+      "rationale": "Bounded credential lifetime limits how long a leaked password stays useful. Kept at LOW severity because modern guidance (NIST 800-63B) favours breach-triggered rotation over forced expiry.",
+      "tags": ["accounts", "authentication", "cis", "policy"],
+      "remediable": true,
+      "risky_remediation": false,
+      "references": ["CIS Ubuntu 24.04 6.2.2", "NIST 800-63B 5.1.1.2"],
+      "status": "pass",
+      "detail": "PASS_MAX_DAYS = 365",
+      "evidence": {
+        "configured": 365,
+        "max_allowed": 365
+      },
+      "duration_ms": 0.196,
+      "remediation": null
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+[Unit]
+Description=Linux hardening audit (one-shot, publishes Prometheus textfile)
+Documentation=https://github.com/example/linux-hardening-agent
+# Metrics are useless if the clock is wrong, and the audit reads network state.
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Runs as root because the audit must read /etc/shadow and private SSH host
+# keys. The alternative -- a capability set -- would need CAP_DAC_READ_SEARCH,
+# which on a host like this is close to equivalent to root anyway. The sandbox
+# directives below are what actually constrain the blast radius.
+User=root
+Group=root
+
+ExecStart=/opt/hardening-agent/venv/bin/hardening-agent export
+
+# Exit code 1 means "findings were found", which is a successful audit of a
+# non-compliant host, not a service failure. Only 2+ is a real error.
+SuccessExitStatus=0 1
+
+TimeoutStartSec=300
+
+# --- sandboxing -------------------------------------------------------------
+# A tool that audits hardening should be hardened. These directives are the
+# systemd equivalent of the controls the agent itself checks for.
+
+# Private /tmp, so a symlink attack in a shared /tmp cannot reach this process.
+PrivateTmp=true
+
+# The filesystem is read-only except for the paths listed below. Even if the
+# agent had an arbitrary-write bug, it could not modify /etc or /usr.
+#
+# This does NOT block remediation: this unit only ever runs `export`, and
+# `hardening-agent remediate` is a deliberate interactive command run outside
+# the unit, so it is not subject to these restrictions. If you ever add a
+# remediation timer, it needs its own unit with /etc in ReadWritePaths.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hardening-agent /var/log/hardening-agent
+
+# /home, /root and /run/user are invisible to this unit.
+# NOTE: the account checks read /root's mode, not its contents, and stat()
+# still works through ProtectHome=read-only.
+ProtectHome=read-only
+
+# Deny access to kernel tunables, modules, and the kernel log for WRITING.
+# ProtectKernelTunables=false is required: the sysctl remediation path needs to
+# write /proc/sys. Audit-only runs never do, but this unit shares a binary with
+# the remediate path, so we leave tunables writable and rely on the agent's own
+# audit-only default rather than pretending otherwise.
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectKernelLogs=false
+ProtectControlGroups=true
+
+# No new privileges: a setuid binary executed from here cannot escalate.
+NoNewPrivileges=true
+
+# Restrict the syscall surface to well-known groups.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# The agent speaks no network protocols in `export` mode.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+PrivateNetwork=false
+
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+
+# --- logging ----------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hardening-agent
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,183 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hardening-agent"
+version = "1.0.0"
+description = "Linux hardening audit, remediation and observability agent"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.13"
+authors = [{ name = "Ahmed Guebsi", email = "ahmed.guebsi@enis.tn" }]
+keywords = ["security", "hardening", "cis", "prometheus", "observability", "linux"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+
+# Deliberately empty. This agent runs as root on production hosts; every runtime
+# dependency is a package that must be patched on the whole fleet and a path into
+# the root context. Config parsing uses stdlib tomllib, metrics are rendered by
+# hand, and the HTTP exporter is http.server. See docs/architecture.md.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "mypy>=1.11",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+hardening-agent = "hardening_agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/example/linux-hardening-agent"
+Documentation = "https://github.com/example/linux-hardening-agent/tree/main/docs"
+Issues = "https://github.com/example/linux-hardening-agent/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hardening_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/docs", "/config", "/packaging", "/scripts", "/README.md"]
+
+# ---------------------------------------------------------------------------
+# Ruff: linter + formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "A",    # builtin shadowing
+    "C4",   # comprehensions
+    "DTZ",  # naive datetime usage
+    "T20",  # print statements
+    "SIM",  # simplify
+    "PTH",  # prefer pathlib
+    "RET",  # return consistency
+    "ARG",  # unused arguments
+    "PL",   # pylint subset
+    "RUF",  # ruff-specific
+    "S",    # bandit security rules
+]
+ignore = [
+    "PLR0913", # many arguments: the CLI and runner legitimately take several
+    "PLR2004", # magic values: permission octals read better inline
+    "RET504",  # named return values aid readability in report builders
+    # S108 flags any literal /tmp path as an insecure temp file. Inspecting the
+    # permissions of /tmp, /var/tmp and /dev/shm is this project's entire
+    # purpose, so the rule fires on ~30 correct lines and zero real defects.
+    "S108",
+    # PTH pushes os.* toward pathlib. The atomic-write paths deliberately use
+    # os.replace/os.chmod/os.fsync because pathlib has no atomic rename and no
+    # way to fsync before it -- see observability/textfile.py.
+    "PTH101", "PTH105", "PTH108", "PTH110", "PTH123",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The CLI is the one place a print() is the correct interface, and its command
+# dispatch legitimately has one return per subcommand.
+"src/hardening_agent/cli.py" = ["T201", "PLR0911"]
+# A flat sequence of independent `if override is not None` branches. Splitting
+# it to satisfy a branch count would make it harder to read, not easier.
+"src/hardening_agent/config.py" = ["PLR0912"]
+# Linear report builders: the branch and statement counts reflect the number of
+# sections in the output, which is inherent to the task.
+"src/hardening_agent/reporting.py" = ["PLR0912", "PLR0915"]
+# Tests may assert, touch private members, and use fixture-injected arguments.
+"tests/**/*.py" = [
+    "S101", "S105", "S106", "SLF001", "ARG001", "ARG002",
+    "PLR2004", "T201", "PLC0415",
+]
+# Developer tooling. E402: the sys.path shim that lets these run from a source
+# checkout must precede the package imports by construction. PLR0915: the doc
+# generator is a linear sequence of `add(...)` calls whose statement count
+# reflects the number of sections in the output.
+"scripts/*.py" = ["T201", "E402", "PLR0915"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hardening_agent", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+warn_no_return = true
+show_error_codes = true
+pretty = true
+# Tests use loose fakes and monkeypatching; full strictness there costs more
+# than it catches.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--import-mode=importlib",
+]
+markers = [
+    "integration: exercises real subprocesses or sockets (deselect with -m 'not integration')",
+    "slow: takes more than a second",
+]
+filterwarnings = ["error"]
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["src/hardening_agent"]
+branch = true
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+precision = 1
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "class .*\\(Protocol\\):",
+    "@abstractmethod",
+    "\\.\\.\\.",
+]
+fail_under = 80

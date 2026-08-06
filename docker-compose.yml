@@ -1,0 +1,132 @@
+# Demonstration stack: the agent plus a Prometheus that scrapes it.
+#
+#   docker compose up --build
+#   open http://localhost:9090          Prometheus
+#   curl localhost:9101/metrics         the agent directly
+#
+# The agent inspects the HOST through read-only bind mounts rather than
+# reporting on the container's own (largely irrelevant) filesystem. Everything
+# it needs is mounted :ro -- the container has no write access to the host at
+# all, which is why it can safely run as an unprivileged user.
+
+name: hardening-agent
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hardening-agent:local
+    container_name: hardening-agent
+    restart: unless-stopped
+
+    # --root /host makes every read resolve against the bind mounts below, so
+    # the agent reports on the HOST's posture rather than the container's.
+    command: ["serve", "--root", "/host"]
+
+    # Bind to loopback on the host. The metrics describe exactly how this
+    # machine is weak; do not publish them on 0.0.0.0.
+    ports:
+      - "127.0.0.1:9101:9101"
+
+    environment:
+      HARDENING_AGENT_LOG_LEVEL: INFO
+      HARDENING_AGENT_LOG_FORMAT: json
+      HARDENING_AGENT_EXPORTER_HOST: 0.0.0.0
+      HARDENING_AGENT_EXPORTER_REFRESH_INTERVAL: "60"
+      # Container filesystems are not the host's; skip the mount-layout check
+      # rather than reporting a false positive on every scrape.
+      HARDENING_AGENT_EXCLUDE: fs_tmp_separate_partition
+
+    volumes:
+      # Read-only host inspection. :ro is not decoration -- it is what makes
+      # running this container defensible.
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc:/host/etc:ro
+      # Metrics textfile, shared with node_exporter below.
+      - agent-textfile:/var/lib/hardening-agent/textfile
+
+    # Drop every capability. The agent reads files and binds one TCP port; it
+    # needs nothing else. NET_BIND_SERVICE is unnecessary because 9101 > 1024.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9101/readyz', timeout=4).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: hardening-agent-prometheus
+    restart: unless-stopped
+    depends_on:
+      agent:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./examples/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./examples/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Demonstrates the textfile collector path: node_exporter picks up the .prom
+  # file the agent writes, so compliance metrics arrive alongside host metrics
+  # on the scrape target you already have.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: hardening-agent-node-exporter
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9100:9100"
+    volumes:
+      - agent-textfile:/var/lib/hardening-agent/textfile:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.textfile.directory=/var/lib/hardening-agent/textfile
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  agent-textfile:
+  prometheus-data:

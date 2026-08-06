@@ -1,0 +1,30 @@
+[Unit]
+Description=Run the Linux hardening audit hourly
+Documentation=https://github.com/example/linux-hardening-agent
+
+[Timer]
+# Hourly is the right cadence for a full audit: frequent enough that a drifted
+# host is caught within an SLA, infrequent enough that the I/O cost is
+# irrelevant. Prometheus scrapes the resulting textfile every 15s regardless.
+OnCalendar=hourly
+
+# Run 5 minutes after boot as well, so a freshly provisioned host reports its
+# posture immediately rather than waiting up to an hour.
+OnBootSec=5min
+
+# Spread the load across a fleet. Without this, every host in an ASG audits at
+# exactly :00 and the resulting metric write storm is synchronised.
+RandomizedDelaySec=300
+
+# If the host was asleep or down at the scheduled time, run once on resume
+# rather than skipping the interval entirely.
+Persistent=true
+
+# Precision hint: we do not need second-accurate scheduling, and relaxing it
+# lets systemd batch timer wakeups, which matters on battery/virtualised hosts.
+AccuracySec=1min
+
+Unit=hardening-agent.service
+
+[Install]
+WantedBy=timers.target
