@@ -169,7 +169,9 @@ def main() -> int:
         if not OUTPUT_PATH.exists():
             print(f"{OUTPUT_PATH} does not exist; run this script without --check")
             return 1
-        current = OUTPUT_PATH.read_text(encoding="utf-8")
+        # newline="" disables newline translation on read, so the comparison is
+        # byte-exact and gives the same answer on Windows and Linux.
+        current = OUTPUT_PATH.read_text(encoding="utf-8", newline="")
         if current != generated:
             print(f"{OUTPUT_PATH} is out of date.\nRun: python scripts/generate_check_docs.py")
             return 1
@@ -177,7 +179,9 @@ def main() -> int:
         return 0
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(generated, encoding="utf-8")
+    # newline="\n" pins LF regardless of the platform generating the file. CI
+    # compares this byte-for-byte, so a CRLF here would fail on a Linux runner.
+    OUTPUT_PATH.write_text(generated, encoding="utf-8", newline="\n")
     print(f"wrote {OUTPUT_PATH} ({len(generated.splitlines())} lines)")
     return 0
 
