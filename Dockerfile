@@ -7,11 +7,27 @@
 # source tree never reach the final image, which keeps it small and removes a
 # large amount of attack surface (a compiler in a production image is a gift to
 # anyone who achieves code execution).
+#
+# ## Why Alpine
+#
+# `python:3.13-slim-bookworm` produced a 197 MB image -- passing the 200 MB
+# budget with 3 MB of headroom, so a single base-image update would break CI.
+# Alpine brings it to ~75 MB.
+#
+# Alpine's musl libc is usually a warning sign for Python, because the
+# scientific stack (numpy, scipy, torch) publishes manylinux but not musllinux
+# wheels and must be compiled from source. That does not apply here: this agent
+# has **zero runtime dependencies** and imports nothing outside the standard
+# library, so there is no wheel to be missing.
+#
+# Note the agent AUDITS glibc-based hosts from inside a musl-based container.
+# That is fine -- it reads /host/proc and /host/etc as data and never links
+# against the host's libc.
 
 # ---------------------------------------------------------------------------
 # Stage 1: builder
 # ---------------------------------------------------------------------------
-FROM python:3.13-slim-bookworm AS builder
+FROM python:3.13-alpine AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -37,7 +53,7 @@ RUN python -m venv /opt/venv \
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
 # ---------------------------------------------------------------------------
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.13-alpine AS runtime
 
 # OCI labels: makes `docker inspect` and registry UIs useful, and lets scanners
 # attribute findings to the right source repository.
@@ -57,10 +73,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # A dedicated unprivileged account. The container audits the host through
 # read-only bind mounts, so it needs no privileges of its own -- a compromised
 # agent container cannot write to anything that matters.
-RUN groupadd --system --gid 65532 nonroot \
-    && useradd --system --uid 65532 --gid nonroot \
-       --home-dir /var/lib/hardening-agent --no-create-home \
-       --shell /usr/sbin/nologin nonroot \
+# (Alpine uses addgroup/adduser, not the shadow-utils groupadd/useradd.)
+RUN addgroup -S -g 65532 nonroot \
+    && adduser -S -u 65532 -G nonroot -H -s /sbin/nologin nonroot \
     && mkdir -p /var/lib/hardening-agent/textfile /etc/hardening-agent \
     && chown -R nonroot:nonroot /var/lib/hardening-agent
 
