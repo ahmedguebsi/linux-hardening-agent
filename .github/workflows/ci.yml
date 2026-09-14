@@ -38,10 +38,12 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --extra dev || uv pip install --system -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Check formatting
         run: ruff format --check --diff src tests scripts
@@ -66,7 +68,14 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - run: uv python install ${{ env.PYTHON_VERSION }}
+      # setup-uv installs uv, not Python. `uv python install` downloads an
+      # interpreter into uv's own store without putting it on PATH, so
+      # `uv pip install --system` targeted the runner's Python 3.12 and every
+      # install failed against requires-python >=3.13. setup-python is what
+      # actually puts 3.13 on PATH, for uv and for the console scripts.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
       - run: uv pip install --system -e ".[dev]"
       - name: mypy --strict
         run: mypy src
@@ -89,7 +98,14 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - run: uv python install ${{ env.PYTHON_VERSION }}
+      # setup-uv installs uv, not Python. `uv python install` downloads an
+      # interpreter into uv's own store without putting it on PATH, so
+      # `uv pip install --system` targeted the runner's Python 3.12 and every
+      # install failed against requires-python >=3.13. setup-python is what
+      # actually puts 3.13 on PATH, for uv and for the console scripts.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
       - run: uv pip install --system -e ".[dev]"
 
       - name: Run tests
@@ -113,7 +129,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - run: uv python install ${{ env.PYTHON_VERSION }}
+      # setup-uv installs uv, not Python. `uv python install` downloads an
+      # interpreter into uv's own store without putting it on PATH, so
+      # `uv pip install --system` targeted the runner's Python 3.12 and every
+      # install failed against requires-python >=3.13. setup-python is what
+      # actually puts 3.13 on PATH, for uv and for the console scripts.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
       - run: uv pip install --system -e "."
 
       # Dogfooding: run the agent against the CI runner itself. This is the

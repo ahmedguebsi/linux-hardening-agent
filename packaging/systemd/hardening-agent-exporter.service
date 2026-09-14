@@ -4,6 +4,14 @@ Documentation=https://github.com/example/linux-hardening-agent
 After=network-online.target
 Wants=network-online.target
 
+# Do not restart-loop forever on a genuine configuration error; give up after
+# 5 attempts in 5 minutes so the failure becomes visible instead of hidden.
+# These are [Unit] directives: systemd ignores StartLimitIntervalSec in
+# [Service], which would leave the window at the 10s default and, with
+# RestartSec=10s, never trip the limit at all.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
 [Service]
 Type=simple
 
@@ -24,10 +32,6 @@ TimeoutStopSec=30
 
 Restart=on-failure
 RestartSec=10s
-# Do not restart-loop forever on a genuine configuration error; give up after
-# 5 attempts in 5 minutes so the failure becomes visible instead of hidden.
-StartLimitBurst=5
-StartLimitIntervalSec=300
 
 # --- resource limits --------------------------------------------------------
 # The agent is a small Python process; these bounds turn a runaway leak into a

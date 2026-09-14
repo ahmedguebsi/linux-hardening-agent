@@ -4,6 +4,12 @@
 # Sourced, never executed directly. Every function here is safe to call from a
 # script running under `set -euo pipefail`.
 
+# Every constant below is consumed by the scripts that source this file, not
+# by this file itself, so ShellCheck cannot see the use and reports SC2034 on
+# each one. The directive must sit before the first command to apply
+# file-wide; placing it next to the block would cover only one assignment.
+# shellcheck disable=SC2034
+
 # Guard against double-sourcing.
 if [[ -n "${_HARDENING_AGENT_COMMON_SH:-}" ]]; then
   return 0

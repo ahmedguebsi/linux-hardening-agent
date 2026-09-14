@@ -11,6 +11,7 @@ from hardening_agent.cli import apply_overrides, build_parser, main
 from hardening_agent.config import Config
 from hardening_agent.models import Severity
 from hardening_agent.runner import EXIT_ERROR, EXIT_OK, EXIT_USAGE
+from hardening_agent.system import LocalSystem
 
 
 @pytest.fixture(autouse=True)
@@ -195,8 +196,14 @@ class TestExitCodeContract:
     def test_usage_error_is_three(self) -> None:
         assert run(["audit", "--check", "nope"])[0] == EXIT_USAGE
 
-    def test_skip_only_run_is_clean(self) -> None:
+    def test_skip_only_run_is_clean(self, monkeypatch) -> None:
         """A check that skips on this platform must not fail the pipeline."""
+        # services_auditd_running skips only when systemctl is absent. Left to
+        # the real host that is true on Windows and macOS but false on Linux,
+        # where the check reports FAIL and the assertion below never holds --
+        # so pin the one input that decides it. Everything after the seam (CLI
+        # dispatch, runner, JSON report, exit code) is still the real thing.
+        monkeypatch.setattr(LocalSystem, "which", lambda _self, _name: None)
         code, output = run(
             [
                 "audit",
